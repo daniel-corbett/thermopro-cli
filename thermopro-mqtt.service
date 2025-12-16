@@ -1,0 +1,35 @@
+[Unit]
+Description=ThermoPro MQTT Publisher for Home Assistant
+After=network-online.target bluetooth.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/src/thermobbq_jadx
+ExecStart=/home/user/src/thermobbq_jadx/venv/bin/python3 /home/user/src/thermobbq_jadx/thermopro_cli.py mqtt --addr E3:5E:A8:FA:2F:2C --interval 30
+
+# Environment variables for MQTT (uncomment and configure)
+# Environment="MQTT_BROKER=192.168.1.100"
+# Environment="MQTT_PORT=1883"
+# Environment="MQTT_USERNAME=homeassistant"
+# Environment="MQTT_PASSWORD=your_password_here"
+
+# Or load from environment file (recommended for secrets)
+# EnvironmentFile=/etc/thermopro/mqtt.env
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=thermopro-mqtt
+
+[Install]
+WantedBy=multi-user.target
