@@ -16,7 +16,7 @@ Usage:
     --probe-names accepts comma-separated labels (e.g. 'Brisket,Ambient,,Ribs').
     Empty slots keep the default 'Probe N' naming.
 
-Environment variables for MQTT:
+Environment variables for MQTT (also read from .env file in script directory):
     MQTT_BROKER   - MQTT broker address
     MQTT_PORT     - MQTT broker port (default: 1883)
     MQTT_USERNAME - MQTT username
@@ -44,6 +44,13 @@ except ImportError:
 
 try:
     import paho.mqtt.client as mqtt
+
+    try:
+        from paho.mqtt.enums import CallbackAPIVersion
+
+        MQTT_V2 = True
+    except ImportError:
+        MQTT_V2 = False
 
     MQTT_AVAILABLE = True
 except ImportError:
@@ -652,7 +659,10 @@ class MQTTPublisher:
         self.password = password
         self.device_name = device_name
         self.discovery_prefix = discovery_prefix
-        self.client = mqtt.Client()
+        if MQTT_V2:
+            self.client = mqtt.Client(CallbackAPIVersion.VERSION2)
+        else:
+            self.client = mqtt.Client()
         self.connected = False
 
         if username and password:
@@ -661,14 +671,17 @@ class MQTTPublisher:
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
 
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        if reason_code == 0:
             self.connected = True
             print("Connected to MQTT broker", file=sys.stderr)
         else:
-            print(f"Failed to connect to MQTT broker: {rc}", file=sys.stderr)
+            print(f"Failed to connect to MQTT broker: {reason_code}", file=sys.stderr)
 
-    def _on_disconnect(self, client, userdata, rc):
+    def _on_disconnect(self, client, userdata, *args):
+        # v1: (client, userdata, rc) — rc is args[0]
+        # v2: (client, userdata, flags, reason_code, properties) — rc is args[1]
+        rc = args[1] if len(args) > 1 else args[0] if args else 0
         self.connected = False
         if rc != 0:
             print("Disconnected from MQTT broker", file=sys.stderr)
@@ -927,7 +940,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_dotenv():
+    """Load .env file from the script's directory into os.environ (no override)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("\"'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except FileNotFoundError:
+        pass
+
+
 def main():
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args()
 
