@@ -2,12 +2,6 @@
 
 ## Reliability / Robustness
 
-### Automatic reconnection in monitor mode
-
-The `monitor` command runs indefinitely but if the BLE connection drops, it
-prints "No update received" and eventually hangs. The MQTT command has full
-exponential-backoff reconnection logic — `monitor` should have the same.
-
 ### Generate handshake bytes properly
 
 `create_handshake_command()` returns a static byte sequence captured from one
@@ -46,7 +40,7 @@ Header row followed by: timestamp, battery, p1, p2, p3, p4.
 
 A `~/.config/thermopro/config.toml` storing device address, preferred unit,
 MQTT credentials, probe names, and alert thresholds. Eliminates repetitive
-CLI flags for daily users.
+CLI flags for daily users. (Note: .env file now handles MQTT credentials.)
 
 ### Configurable timeout flag
 
@@ -60,36 +54,6 @@ Run one process that connects to multiple thermometers simultaneously
 one systemd service instead of N. Significant scope expansion but frequently
 requested for BBQ setups with multiple thermometers.
 
----
-
-## Code Quality / Maintainability
-
-### Remove vestigial --poll flag
-
-The `--poll` flag is accepted by argparse but `ThermoproClient.use_polling` is
-only used in `poll_temperature()`, which is never called by any command.
-Either wire it up or remove the dead code path.
-
-### Deduplicate scan logic
-
-`cmd_scan()` reimplements the same filter+dedup that
-`scan_thermopro_devices()` already does. Should call
-`scan_thermopro_devices()` directly and only handle the "show all devices"
-fallback separately.
-
-### Clean up argparse dispatch
-
-Every command dispatch in `main()` uses `getattr(args, ...)` defensively
-because argparse subparsers share a namespace. Using `set_defaults(func=...)`
-on each subparser and calling `args.func(**vars(args))` would be cleaner.
-
-### Structured logging
-
-Debug output mixes `print(..., file=sys.stderr)` with a `debug` bool threaded
-through every function. A single `logging.getLogger()` with `--debug` setting
-the level to DEBUG would be cleaner and let users do `--debug 2>debug.log`
-more naturally.
-
 ### Dynamic MQTT model name
 
 `publish_discovery()` always reports `"model": "TP25W"` regardless of which
@@ -100,21 +64,11 @@ device is actually connected. If the scan already identifies the device name
 
 ## UX Polish
 
-### Clean signal handling in monitor
-
-Ctrl+C currently prints "Stopping..." but Python sometimes also dumps a
-KeyboardInterrupt traceback depending on where the signal hits the event loop.
-A proper signal handler (`loop.add_signal_handler`) would make exit cleaner.
-
 ### Formalize exit codes
 
 Exit codes are inconsistent — some paths return None (implicit 0), some
 return 0/1. Formalizing exit codes (0=success, 1=connection error, 2=no device
 found, etc.) would help scripting.
-
-### Add --version flag
-
-Minor but expected for CLI tools.
 
 ### Scan progress feedback
 
@@ -126,12 +80,11 @@ stderr would signal it's working, not hung.
 ## Priority
 
 **High impact, low effort:**
-- Remove dead --poll code
-- Deduplicate scan logic
-- --version flag
+- Explicit BLE connection timeout
+- Configurable --timeout flag
+- Dynamic MQTT model name
 
 **High impact, medium effort:**
-- Reconnection in monitor mode
 - Temperature alerts
 - Config file
 

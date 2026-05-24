@@ -842,9 +842,8 @@ async def cmd_mqtt(cfg: RunConfig) -> int:
                     mqtt_pub.publish_battery_state(client.state.battery)
                     log.debug("Published Battery: %d%%", client.state.battery)
 
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(
-                        f"[{timestamp}] Published update - Battery:{client.state.battery}%",
+                        format_monitor_line(client.state, cfg.probe_names, cfg.unit),
                         file=sys.stderr,
                     )
                 else:
