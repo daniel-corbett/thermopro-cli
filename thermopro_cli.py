@@ -5,13 +5,16 @@ Reverse-engineered protocol implementation for Linux
 
 Usage:
     thermopro_cli.py [--debug] scan
-    thermopro_cli.py [--debug] connect [--addr ADDRESS]
-    thermopro_cli.py [--debug] temps [--addr ADDRESS] [--json] [--unit F|C]
-    thermopro_cli.py [--debug] monitor [--addr ADDRESS] [--interval 1] [--json] [--unit F|C]
-    thermopro_cli.py [--debug] mqtt --addr ADDRESS [--interval 5] [--unit F|C] [--broker HOST] [--port 1883]
+    thermopro_cli.py [--debug] connect [--addr ADDRESS] [--probe-names NAMES]
+    thermopro_cli.py [--debug] temps [--addr ADDRESS] [--json] [--unit F|C] [--probe-names NAMES]
+    thermopro_cli.py [--debug] monitor [--addr ADDRESS] [--interval 1] [--json] [--unit F|C] [--probe-names NAMES]
+    thermopro_cli.py [--debug] mqtt --addr ADDRESS [--interval 5] [--unit F|C] [--broker HOST] [--probe-names NAMES]
 
     If --addr is omitted (except for mqtt), the tool auto-scans for ThermoPro
     devices and prompts for selection if multiple are found.
+
+    --probe-names accepts comma-separated labels (e.g. 'Brisket,Ambient,,Ribs').
+    Empty slots keep the default 'Probe N' naming.
 
 Environment variables for MQTT:
     MQTT_BROKER   - MQTT broker address
@@ -56,6 +59,33 @@ TEMP_SENTINELS = {-999.0, -100.0, 666.0}
 
 def is_valid_temp(t: float) -> bool:
     return t not in TEMP_SENTINELS
+
+
+def parse_probe_names(raw: Optional[str], max_probes: int = 4) -> List[Optional[str]]:
+    """Parse comma-separated probe names. Empty slots become None."""
+    if not raw:
+        return [None] * max_probes
+    parts = raw.split(",")
+    if len(parts) > max_probes:
+        print(
+            f"Warning: {len(parts)} names provided but max is {max_probes}, "
+            f"ignoring extras",
+            file=sys.stderr,
+        )
+        parts = parts[:max_probes]
+    names = [(p.strip() or None) for p in parts]
+    names.extend([None] * (max_probes - len(names)))
+    return names
+
+
+def get_probe_label(
+    probe_names: List[Optional[str]], index: int, compact: bool = False
+) -> str:
+    """Return display label for a probe — custom name or default."""
+    name = probe_names[index] if index < len(probe_names) else None
+    if name:
+        return name[:8] if compact else name
+    return f"P{index+1}" if compact else f"Probe {index+1}"
 
 
 # Device state
@@ -505,9 +535,14 @@ async def cmd_scan():
 
 
 async def cmd_connect(
-    address: Optional[str], use_polling: bool = False, debug: bool = False
+    address: Optional[str],
+    use_polling: bool = False,
+    debug: bool = False,
+    probe_names=None,
 ):
     """Test connection to a device"""
+    if probe_names is None:
+        probe_names = [None] * 4
     address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
 
@@ -524,18 +559,18 @@ async def cmd_connect(
             print(f"Probes: {client.state.probe_count}")
             temps = client.state.get_display_temperatures()
             for i, temp in enumerate(temps[: client.state.probe_count]):
+                label = get_probe_label(probe_names, i)
                 if is_valid_temp(temp):
                     print(
-                        f"Probe {i+1}: {temp:.1f}°{client.state.display_unit} (connected)"
+                        f"{label}: {temp:.1f}°{client.state.display_unit} (connected)"
                     )
                 else:
-                    print(f"Probe {i+1}: not connected")
+                    print(f"{label}: not connected")
             return 0
         else:
             print("Timeout waiting for temperature data", file=sys.stderr)
             return 1
     finally:
-        # Always disconnect, even on Ctrl+C or errors
         await client.disconnect()
 
 
@@ -545,8 +580,11 @@ async def cmd_temps(
     unit: Optional[str] = None,
     use_polling: bool = False,
     debug: bool = False,
+    probe_names=None,
 ):
     """Get current temperatures"""
+    if probe_names is None:
+        probe_names = [None] * 4
     address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
     display_unit = unit.upper() if unit else "F"
@@ -558,22 +596,27 @@ async def cmd_temps(
         # Wait for update
         if await client.wait_for_update(timeout=10.0):
             if as_json:
-                print(json.dumps(client.state.to_dict(), indent=2))
+                output = client.state.to_dict()
+                output["probe_names"] = [
+                    get_probe_label(probe_names, i)
+                    for i in range(client.state.probe_count)
+                ]
+                print(json.dumps(output, indent=2))
             else:
                 print(f"Battery: {client.state.battery}%")
                 print(f"Unit: {client.state.display_unit}")
                 temps = client.state.get_display_temperatures()
                 for i, temp in enumerate(temps[: client.state.probe_count]):
+                    label = get_probe_label(probe_names, i)
                     if is_valid_temp(temp):
-                        print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit}")
+                        print(f"{label}: {temp:.1f}°{client.state.display_unit}")
                     else:
-                        print(f"Probe {i+1}: not connected")
+                        print(f"{label}: not connected")
             return 0
         else:
             print("Error: Timeout waiting for temperature data", file=sys.stderr)
             return 1
     finally:
-        # Always disconnect, even on Ctrl+C or errors
         await client.disconnect()
 
 
@@ -584,8 +627,11 @@ async def cmd_monitor(
     unit: Optional[str] = None,
     use_polling: bool = False,
     debug: bool = False,
+    probe_names=None,
 ):
     """Monitor temperatures continuously"""
+    if probe_names is None:
+        probe_names = [None] * 4
     address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
     display_unit = unit.upper() if unit else "F"
@@ -605,18 +651,23 @@ async def cmd_monitor(
                     if as_json:
                         output = client.state.to_dict()
                         output["timestamp"] = timestamp
+                        output["probe_names"] = [
+                            get_probe_label(probe_names, i)
+                            for i in range(client.state.probe_count)
+                        ]
                         print(json.dumps(output))
                         sys.stdout.flush()
                     else:
                         temps_str = []
                         temps = client.state.get_display_temperatures()
                         for i, temp in enumerate(temps[: client.state.probe_count]):
+                            label = get_probe_label(probe_names, i, compact=True)
                             if is_valid_temp(temp):
                                 temps_str.append(
-                                    f"P{i+1}:{temp:.1f}°{client.state.display_unit}"
+                                    f"{label}:{temp:.1f}°{client.state.display_unit}"
                                 )
                             else:
-                                temps_str.append(f"P{i+1}:---")
+                                temps_str.append(f"{label}:---")
 
                         print(
                             f"[{timestamp}] Battery:{client.state.battery:3d}% | {' | '.join(temps_str)}"
@@ -632,7 +683,6 @@ async def cmd_monitor(
 
         return 0
     finally:
-        # Always disconnect, even on Ctrl+C or errors
         await client.disconnect()
 
 
@@ -695,10 +745,17 @@ class MQTTPublisher:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish_discovery(self, probe_num: int, mac_address: str, unit: str = "F"):
+    def publish_discovery(
+        self,
+        probe_num: int,
+        mac_address: str,
+        unit: str = "F",
+        probe_name: Optional[str] = None,
+    ):
         """Publish Home Assistant MQTT discovery config for a probe"""
         device_id = mac_address.replace(":", "").lower()
         probe_id = f"{self.device_name}_probe{probe_num}"
+        display_name = probe_name or f"ThermoPro Probe {probe_num}"
 
         # Device info (shared by all sensors)
         device_info = {
@@ -710,7 +767,7 @@ class MQTTPublisher:
 
         # Temperature sensor config
         temp_config = {
-            "name": f"ThermoPro Probe {probe_num}",
+            "name": display_name,
             "unique_id": f"{device_id}_probe{probe_num}_temp",
             "state_topic": f"{self.discovery_prefix}/sensor/{probe_id}/state",
             "unit_of_measurement": f"°{unit}",
@@ -781,8 +838,11 @@ async def cmd_mqtt(
     username: Optional[str] = None,
     password: Optional[str] = None,
     device_name: str = "thermopro",
+    probe_names=None,
 ):
     """Monitor temperatures and publish to MQTT for Home Assistant with automatic reconnection"""
+    if probe_names is None:
+        probe_names = [None] * 4
 
     if not MQTT_AVAILABLE:
         print(
@@ -854,7 +914,10 @@ async def cmd_mqtt(
                             file=sys.stderr,
                         )
                     for probe_num in range(1, 5):
-                        mqtt_client.publish_discovery(probe_num, address, display_unit)
+                        name = probe_names[probe_num - 1]
+                        mqtt_client.publish_discovery(
+                            probe_num, address, display_unit, probe_name=name
+                        )
                     mqtt_client.publish_battery_discovery(address)
 
                     # Reset retry delay on successful connection
@@ -1022,6 +1085,12 @@ def main():
         help="Device name for MQTT topics (default: thermopro)",
     )
 
+    for p in [parser_connect, parser_temps, parser_monitor, parser_mqtt]:
+        p.add_argument(
+            "--probe-names",
+            help="Comma-separated probe names (e.g. 'Brisket,Ambient,,Ribs')",
+        )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1030,10 +1099,19 @@ def main():
 
     # Run the appropriate command
     debug = getattr(args, "debug", False)
+    probe_names = parse_probe_names(getattr(args, "probe_names", None))
+
     if args.command == "scan":
         return asyncio.run(cmd_scan())
     elif args.command == "connect":
-        return asyncio.run(cmd_connect(args.addr, getattr(args, "poll", False), debug))
+        return asyncio.run(
+            cmd_connect(
+                args.addr,
+                getattr(args, "poll", False),
+                debug,
+                probe_names=probe_names,
+            )
+        )
     elif args.command == "temps":
         return asyncio.run(
             cmd_temps(
@@ -1042,6 +1120,7 @@ def main():
                 getattr(args, "unit", None),
                 getattr(args, "poll", False),
                 debug,
+                probe_names=probe_names,
             )
         )
     elif args.command == "monitor":
@@ -1053,6 +1132,7 @@ def main():
                 getattr(args, "unit", None),
                 getattr(args, "poll", False),
                 debug,
+                probe_names=probe_names,
             )
         )
     elif args.command == "mqtt":
@@ -1067,6 +1147,7 @@ def main():
                 getattr(args, "username", None),
                 getattr(args, "password", None),
                 getattr(args, "device_name", "thermopro"),
+                probe_names=probe_names,
             )
         )
 
