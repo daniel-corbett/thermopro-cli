@@ -28,6 +28,7 @@ import argparse
 import json
 import logging
 import re
+import signal
 import sys
 import time
 import os
@@ -587,7 +588,10 @@ async def connection_loop(address: str):
             log.warning("%s, reconnecting in %ds", e, delay)
             await asyncio.sleep(delay)
         finally:
-            await client.disconnect()
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
 
 async def cmd_monitor(cfg: RunConfig) -> int:
@@ -597,8 +601,9 @@ async def cmd_monitor(cfg: RunConfig) -> int:
     if not cfg.as_json:
         print("Monitoring temperatures (Ctrl+C to stop)...\n", file=sys.stderr)
 
+    gen = connection_loop(address)
     try:
-        async for client in connection_loop(address):
+        async for client in gen:
             while True:
                 if await client.wait_for_update(timeout=10.0):
                     if cfg.as_json:
@@ -621,8 +626,10 @@ async def cmd_monitor(cfg: RunConfig) -> int:
                     log.warning("No update received, reconnecting...")
                     break
                 await asyncio.sleep(cfg.interval)
-    except KeyboardInterrupt:
-        print("\nStopping...", file=sys.stderr)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        await gen.aclose()
 
     return 0
 
@@ -789,13 +796,14 @@ async def cmd_mqtt(cfg: RunConfig) -> int:
         print("Error: Failed to connect to MQTT broker", file=sys.stderr)
         return 1
 
+    gen = connection_loop(cfg.address)
     try:
         print(
             f"Publishing to MQTT broker {cfg.broker}:{cfg.port} (Ctrl+C to stop)...\n",
             file=sys.stderr,
         )
 
-        async for client in connection_loop(cfg.address):
+        async for client in gen:
             log.debug("Publishing Home Assistant discovery configs...")
             for probe_num in range(1, MAX_PROBES + 1):
                 name = cfg.probe_names[probe_num - 1]
@@ -832,9 +840,10 @@ async def cmd_mqtt(cfg: RunConfig) -> int:
 
                 await asyncio.sleep(cfg.interval)
 
-    except KeyboardInterrupt:
-        print("\nStopping...", file=sys.stderr)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
     finally:
+        await gen.aclose()
         mqtt_pub.disconnect()
 
     return 0
@@ -933,7 +942,18 @@ def main():
     )
 
     cfg = RunConfig.from_args(args)
-    return asyncio.run(args.func(cfg))
+
+    def _sigint_handler(sig, frame):
+        print("\nStopping...", file=sys.stderr)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    try:
+        return asyncio.run(args.func(cfg))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":
