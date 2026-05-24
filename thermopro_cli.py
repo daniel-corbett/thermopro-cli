@@ -50,18 +50,36 @@ WRITE_UUID = "1086FFF1-3343-4817-8BB2-B32206336CE8"
 class ThermoproState:
     def __init__(self):
         self.battery = 0
-        self.unit = "C"
+        self.device_unit = "C"  # What the device is actually reporting in
+        self.display_unit = "F"  # What the user wants to see
         self.probe_count = 4
-        self.temperatures = [-999.0] * 4
+        self.temperatures = [-999.0] * 4  # Always stored in device's native unit
         self.last_update = None
         self.connected = False
 
+    def get_display_temperatures(self) -> list:
+        """Return temperatures converted to the user's requested display unit."""
+        if self.device_unit == self.display_unit:
+            return self.temperatures[:]
+        temps = []
+        for t in self.temperatures:
+            if t <= -900:
+                temps.append(t)
+            elif self.device_unit == "C" and self.display_unit == "F":
+                temps.append(t * 9.0 / 5.0 + 32.0)
+            elif self.device_unit == "F" and self.display_unit == "C":
+                temps.append((t - 32.0) * 5.0 / 9.0)
+            else:
+                temps.append(t)
+        return temps
+
     def to_dict(self):
+        temps = self.get_display_temperatures()
         return {
             "battery": self.battery,
-            "unit": self.unit,
+            "unit": self.display_unit,
             "probe_count": self.probe_count,
-            "temperatures": self.temperatures,
+            "temperatures": [round(t, 1) if t > -900 else t for t in temps],
             "last_update": self.last_update.isoformat() if self.last_update else None,
             "connected": self.connected,
         }
@@ -137,8 +155,9 @@ def create_set_unit_command(fahrenheit: bool = False) -> bytes:
     """
     Create command to set temperature unit.
     Based on p/b.java:116-118
+    0x0F = Fahrenheit, 0x0C = Celsius
     """
-    unit = 0x0C if fahrenheit else 0x0F
+    unit = 0x0F if fahrenheit else 0x0C
     cmd = [0x20, 0x01, unit]
     checksum = calculate_checksum(cmd)
     return bytes(cmd + [checksum])
@@ -163,7 +182,8 @@ class ThermoproClient:
             return
 
         self.state.battery = data[2]
-        self.state.unit = "F" if data[3] == 0x0C else "C"
+        # Device always reports temperatures in Celsius regardless of unit byte
+        self.state.device_unit = "C"
 
         # Detect TP25W vs TP920 format
         # TP25W has 0x00 at offset 4, and temp data starts at offset 5
@@ -283,8 +303,13 @@ class ThermoproClient:
             return self.state.last_update is not None
         return False
 
-    async def connect(self) -> bool:
-        """Connect to the thermometer and initialize"""
+    async def connect(self, display_unit: str = "F") -> bool:
+        """Connect to the thermometer and initialize.
+
+        The device always reports in its native unit (usually Celsius).
+        We convert to the requested display_unit in software.
+        """
+        self.state.display_unit = display_unit
         try:
             if self.debug:
                 print(f"Connecting to {self.address}...", file=sys.stderr)
@@ -309,7 +334,7 @@ class ThermoproClient:
             # Wait for handshake response and first temperature update
             if self.debug:
                 print("Waiting for temperature data...", file=sys.stderr)
-            await asyncio.sleep(2.0)  # Give device time to start streaming
+            await asyncio.sleep(2.0)
 
             if self.debug:
                 print("Initialization complete!", file=sys.stderr)
@@ -373,7 +398,7 @@ async def cmd_connect(address: str, use_polling: bool = False, debug: bool = Fal
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
 
     try:
-        if not await client.connect():
+        if not await client.connect(display_unit="F"):
             return 1
 
         if debug:
@@ -381,14 +406,13 @@ async def cmd_connect(address: str, use_polling: bool = False, debug: bool = Fal
         if await client.wait_for_update(timeout=10.0):
             print("\nReceived temperature update!")
             print(f"Battery: {client.state.battery}%")
-            print(f"Unit: {client.state.unit}")
+            print(f"Unit: {client.state.display_unit}")
             print(f"Probes: {client.state.probe_count}")
-            for i, temp in enumerate(
-                client.state.temperatures[: client.state.probe_count]
-            ):
+            temps = client.state.get_display_temperatures()
+            for i, temp in enumerate(temps[: client.state.probe_count]):
                 status = "connected" if temp > -900 else "not connected"
                 if temp > -900:
-                    print(f"Probe {i+1}: {temp:.1f}°{client.state.unit} ({status})")
+                    print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit} ({status})")
                 else:
                     print(f"Probe {i+1}: {status}")
             return 0
@@ -409,16 +433,11 @@ async def cmd_temps(
 ):
     """Get current temperatures"""
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
+    display_unit = unit.upper() if unit else "F"
 
     try:
-        if not await client.connect():
+        if not await client.connect(display_unit=display_unit):
             return 1
-
-        # Set unit if requested
-        if unit:
-            fahrenheit = unit.upper() == "F"
-            await client.set_unit(fahrenheit)
-            await asyncio.sleep(0.5)
 
         # Wait for update
         if await client.wait_for_update(timeout=10.0):
@@ -426,12 +445,11 @@ async def cmd_temps(
                 print(json.dumps(client.state.to_dict(), indent=2))
             else:
                 print(f"Battery: {client.state.battery}%")
-                print(f"Unit: {client.state.unit}")
-                for i, temp in enumerate(
-                    client.state.temperatures[: client.state.probe_count]
-                ):
+                print(f"Unit: {client.state.display_unit}")
+                temps = client.state.get_display_temperatures()
+                for i, temp in enumerate(temps[: client.state.probe_count]):
                     if temp > -900:
-                        print(f"Probe {i+1}: {temp:.1f}°{client.state.unit}")
+                        print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit}")
                     else:
                         print(f"Probe {i+1}: not connected")
             return 0
@@ -453,16 +471,11 @@ async def cmd_monitor(
 ):
     """Monitor temperatures continuously"""
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
+    display_unit = unit.upper() if unit else "F"
 
     try:
-        if not await client.connect():
+        if not await client.connect(display_unit=display_unit):
             return 1
-
-        # Set unit if requested
-        if unit:
-            fahrenheit = unit.upper() == "F"
-            await client.set_unit(fahrenheit)
-            await asyncio.sleep(0.5)
 
         if not as_json:
             print("Monitoring temperatures (Ctrl+C to stop)...\n", file=sys.stderr)
@@ -479,12 +492,13 @@ async def cmd_monitor(
                         sys.stdout.flush()
                     else:
                         temps_str = []
+                        temps = client.state.get_display_temperatures()
                         for i, temp in enumerate(
-                            client.state.temperatures[: client.state.probe_count]
+                            temps[: client.state.probe_count]
                         ):
                             if temp > -900:
                                 temps_str.append(
-                                    f"P{i+1}:{temp:.1f}°{client.state.unit}"
+                                    f"P{i+1}:{temp:.1f}°{client.state.display_unit}"
                                 )
                             else:
                                 temps_str.append(f"P{i+1}:---")
@@ -705,8 +719,9 @@ async def cmd_mqtt(
 
                     print(f"Connecting to thermometer {address}...", file=sys.stderr)
                     thermo_client = ThermoproClient(address, debug=debug)
+                    display_unit = unit.upper() if unit else "F"
 
-                    if not await thermo_client.connect():
+                    if not await thermo_client.connect(display_unit=display_unit):
                         consecutive_failures += 1
                         retry_delay = min(
                             5 * (2 ** (consecutive_failures - 1)), max_retry_delay
@@ -717,12 +732,6 @@ async def cmd_mqtt(
                         )
                         await asyncio.sleep(retry_delay)
                         continue
-
-                    # Set unit if requested
-                    if unit:
-                        fahrenheit = unit.upper() == "F"
-                        await thermo_client.set_unit(fahrenheit)
-                        await asyncio.sleep(0.5)
 
                     # Publish discovery configs on (re)connection
                     if debug:
@@ -741,15 +750,16 @@ async def cmd_mqtt(
 
                 # Wait for temperature update
                 if await thermo_client.wait_for_update(timeout=15.0):
-                    # Publish probe temperatures
-                    for i, temp in enumerate(thermo_client.state.temperatures[:4]):
+                    # Publish probe temperatures (converted to display unit)
+                    temps = thermo_client.state.get_display_temperatures()
+                    for i, temp in enumerate(temps[:4]):
                         probe_num = i + 1
                         connected = temp > -900
                         mqtt_client.publish_state(probe_num, temp, connected)
 
                         if debug:
                             status = (
-                                f"{temp:.1f}°{thermo_client.state.unit}"
+                                f"{temp:.1f}°{thermo_client.state.display_unit}"
                                 if connected
                                 else "disconnected"
                             )
