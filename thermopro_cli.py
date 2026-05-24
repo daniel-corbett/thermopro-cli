@@ -5,10 +5,13 @@ Reverse-engineered protocol implementation for Linux
 
 Usage:
     thermopro_cli.py [--debug] scan
-    thermopro_cli.py [--debug] connect --addr E3:5E:A8:FA:2F:2C
-    thermopro_cli.py [--debug] temps --addr E3:5E:A8:FA:2F:2C [--json] [--unit F|C]
-    thermopro_cli.py [--debug] monitor --addr E3:5E:A8:FA:2F:2C [--interval 1] [--json] [--unit F|C]
-    thermopro_cli.py [--debug] mqtt --addr E3:5E:A8:FA:2F:2C [--interval 5] [--unit F|C] [--broker HOST] [--port 1883]
+    thermopro_cli.py [--debug] connect [--addr ADDRESS]
+    thermopro_cli.py [--debug] temps [--addr ADDRESS] [--json] [--unit F|C]
+    thermopro_cli.py [--debug] monitor [--addr ADDRESS] [--interval 1] [--json] [--unit F|C]
+    thermopro_cli.py [--debug] mqtt --addr ADDRESS [--interval 5] [--unit F|C] [--broker HOST] [--port 1883]
+
+    If --addr is omitted (except for mqtt), the tool auto-scans for ThermoPro
+    devices and prompts for selection if multiple are found.
 
 Environment variables for MQTT:
     MQTT_BROKER   - MQTT broker address
@@ -386,17 +389,113 @@ class ThermoproClient:
             return False
 
 
+def is_thermopro_device(name: str) -> bool:
+    return "thermo" in name.lower() or bool(re.match(r"^TP\d", name))
+
+
+async def scan_thermopro_devices(timeout: float = 3.0) -> List:
+    """Scan for ThermoPro BLE devices, deduplicated by address."""
+    print("Scanning for ThermoPro devices...", file=sys.stderr)
+    try:
+        devices = await BleakScanner.discover(timeout=timeout)
+    except Exception as e:
+        print(
+            f"Error: BLE scan failed. Is Bluetooth enabled?\nDetails: {e}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    seen = {}
+    for d in devices:
+        if is_thermopro_device(d.name or "") and d.address not in seen:
+            seen[d.address] = d
+    return list(seen.values())
+
+
+async def resolve_address(addr: Optional[str]) -> str:
+    """Resolve device address: use provided value or auto-discover via scan."""
+    if addr:
+        return addr
+
+    thermopro_devices = await scan_thermopro_devices()
+
+    if not thermopro_devices:
+        print(
+            "Error: No ThermoPro devices found. Specify --addr manually.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if len(thermopro_devices) == 1:
+        device = thermopro_devices[0]
+        print(f"Auto-selected: {device.name} ({device.address})", file=sys.stderr)
+        return device.address
+
+    # Multiple devices — need interactive selection
+    if not sys.stdin.isatty():
+        print(
+            "Error: Multiple ThermoPro devices found but stdin is not interactive.\n"
+            "Specify --addr to select a device:",
+            file=sys.stderr,
+        )
+        for d in thermopro_devices:
+            print(f"  {d.name}  ({d.address})", file=sys.stderr)
+        sys.exit(1)
+
+    print(
+        f"\nFound {len(thermopro_devices)} ThermoPro devices:\n", file=sys.stderr
+    )
+    for i, device in enumerate(thermopro_devices, 1):
+        print(f"  [{i}] {device.name}  ({device.address})", file=sys.stderr)
+    print(file=sys.stderr)
+
+    while True:
+        try:
+            sys.stderr.write(f"Select device [1-{len(thermopro_devices)}]: ")
+            sys.stderr.flush()
+            choice = input()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.", file=sys.stderr)
+            sys.exit(1)
+
+        try:
+            index = int(choice) - 1
+            if 0 <= index < len(thermopro_devices):
+                selected = thermopro_devices[index]
+                print(
+                    f"Selected: {selected.name} ({selected.address})",
+                    file=sys.stderr,
+                )
+                return selected.address
+        except ValueError:
+            pass
+
+        print(
+            f"Invalid choice. Enter a number between 1 and {len(thermopro_devices)}.",
+            file=sys.stderr,
+        )
+
+
 async def cmd_scan():
     """Scan for ThermoPro devices"""
     print("Scanning for Bluetooth devices...", file=sys.stderr)
-    devices = await BleakScanner.discover(timeout=5.0)
+    try:
+        devices = await BleakScanner.discover(timeout=5.0)
+    except Exception as e:
+        print(
+            f"Error: BLE scan failed. Is Bluetooth enabled?\nDetails: {e}",
+            file=sys.stderr,
+        )
+        return 1
 
-    thermopro_devices = []
-    for device in devices:
-        name = device.name or ""
-        if "thermo" in name.lower() or re.match(r"^TP\d", name):
-            thermopro_devices.append(device)
-            print(f"Found: {device.name} ({device.address})")
+    seen = {}
+    for d in devices:
+        if is_thermopro_device(d.name or "") and d.address not in seen:
+            seen[d.address] = d
+    thermopro_devices = list(seen.values())
+
+    for device in thermopro_devices:
+        print(f"Found: {device.name} ({device.address})")
 
     if not thermopro_devices:
         print("\nNo ThermoPro devices found.", file=sys.stderr)
@@ -407,8 +506,9 @@ async def cmd_scan():
     return 0 if thermopro_devices else 1
 
 
-async def cmd_connect(address: str, use_polling: bool = False, debug: bool = False):
+async def cmd_connect(address: Optional[str], use_polling: bool = False, debug: bool = False):
     """Test connection to a device"""
+    address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
 
     try:
@@ -438,13 +538,14 @@ async def cmd_connect(address: str, use_polling: bool = False, debug: bool = Fal
 
 
 async def cmd_temps(
-    address: str,
+    address: Optional[str],
     as_json: bool = False,
     unit: Optional[str] = None,
     use_polling: bool = False,
     debug: bool = False,
 ):
     """Get current temperatures"""
+    address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
     display_unit = unit.upper() if unit else "F"
 
@@ -475,7 +576,7 @@ async def cmd_temps(
 
 
 async def cmd_monitor(
-    address: str,
+    address: Optional[str],
     interval: int = 1,
     as_json: bool = False,
     unit: Optional[str] = None,
@@ -483,6 +584,7 @@ async def cmd_monitor(
     debug: bool = False,
 ):
     """Monitor temperatures continuously"""
+    address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
     display_unit = unit.upper() if unit else "F"
 
@@ -857,7 +959,7 @@ def main():
     # Connect command
     parser_connect = subparsers.add_parser("connect", help="Test connection to device")
     parser_connect.add_argument(
-        "--addr", required=True, help="Bluetooth address (e.g., E3:5E:A8:FA:2F:2C)"
+        "--addr", help="Bluetooth address (auto-scans if not provided)"
     )
     parser_connect.add_argument(
         "--poll", action="store_true", help="Use polling mode (for TP25W)"
@@ -865,7 +967,7 @@ def main():
 
     # Temps command
     parser_temps = subparsers.add_parser("temps", help="Get current temperatures")
-    parser_temps.add_argument("--addr", required=True, help="Bluetooth address")
+    parser_temps.add_argument("--addr", help="Bluetooth address (auto-scans if not provided)")
     parser_temps.add_argument("--json", action="store_true", help="Output as JSON")
     parser_temps.add_argument("--unit", choices=["C", "F"], help="Temperature unit")
     parser_temps.add_argument(
@@ -876,7 +978,7 @@ def main():
     parser_monitor = subparsers.add_parser(
         "monitor", help="Monitor temperatures continuously"
     )
-    parser_monitor.add_argument("--addr", required=True, help="Bluetooth address")
+    parser_monitor.add_argument("--addr", help="Bluetooth address (auto-scans if not provided)")
     parser_monitor.add_argument(
         "--interval", type=int, default=1, help="Update interval in seconds"
     )
