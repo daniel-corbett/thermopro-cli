@@ -442,9 +442,7 @@ async def resolve_address(addr: Optional[str]) -> str:
             print(f"  {d.name}  ({d.address})", file=sys.stderr)
         sys.exit(1)
 
-    print(
-        f"\nFound {len(thermopro_devices)} ThermoPro devices:\n", file=sys.stderr
-    )
+    print(f"\nFound {len(thermopro_devices)} ThermoPro devices:\n", file=sys.stderr)
     for i, device in enumerate(thermopro_devices, 1):
         print(f"  [{i}] {device.name}  ({device.address})", file=sys.stderr)
     print(file=sys.stderr)
@@ -506,7 +504,9 @@ async def cmd_scan():
     return 0 if thermopro_devices else 1
 
 
-async def cmd_connect(address: Optional[str], use_polling: bool = False, debug: bool = False):
+async def cmd_connect(
+    address: Optional[str], use_polling: bool = False, debug: bool = False
+):
     """Test connection to a device"""
     address = await resolve_address(address)
     client = ThermoproClient(address, use_polling=use_polling, debug=debug)
@@ -525,7 +525,9 @@ async def cmd_connect(address: Optional[str], use_polling: bool = False, debug: 
             temps = client.state.get_display_temperatures()
             for i, temp in enumerate(temps[: client.state.probe_count]):
                 if is_valid_temp(temp):
-                    print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit} (connected)")
+                    print(
+                        f"Probe {i+1}: {temp:.1f}°{client.state.display_unit} (connected)"
+                    )
                 else:
                     print(f"Probe {i+1}: not connected")
             return 0
@@ -608,9 +610,7 @@ async def cmd_monitor(
                     else:
                         temps_str = []
                         temps = client.state.get_display_temperatures()
-                        for i, temp in enumerate(
-                            temps[: client.state.probe_count]
-                        ):
+                        for i, temp in enumerate(temps[: client.state.probe_count]):
                             if is_valid_temp(temp):
                                 temps_str.append(
                                     f"P{i+1}:{temp:.1f}°{client.state.display_unit}"
@@ -967,7 +967,9 @@ def main():
 
     # Temps command
     parser_temps = subparsers.add_parser("temps", help="Get current temperatures")
-    parser_temps.add_argument("--addr", help="Bluetooth address (auto-scans if not provided)")
+    parser_temps.add_argument(
+        "--addr", help="Bluetooth address (auto-scans if not provided)"
+    )
     parser_temps.add_argument("--json", action="store_true", help="Output as JSON")
     parser_temps.add_argument("--unit", choices=["C", "F"], help="Temperature unit")
     parser_temps.add_argument(
@@ -978,7 +980,9 @@ def main():
     parser_monitor = subparsers.add_parser(
         "monitor", help="Monitor temperatures continuously"
     )
-    parser_monitor.add_argument("--addr", help="Bluetooth address (auto-scans if not provided)")
+    parser_monitor.add_argument(
+        "--addr", help="Bluetooth address (auto-scans if not provided)"
+    )
     parser_monitor.add_argument(
         "--interval", type=int, default=1, help="Update interval in seconds"
     )
