@@ -185,6 +185,11 @@ class ThermoproClient:
         # Device always reports temperatures in Celsius regardless of unit byte
         self.state.device_unit = "C"
 
+        if self.debug:
+            hex_dump = " ".join(f"{b:02X}" for b in data)
+            print(f"[DEBUG] 0x30 raw: {hex_dump}", file=sys.stderr)
+            print(f"[DEBUG] byte[3] (unit?): 0x{data[3]:02X}", file=sys.stderr)
+
         # Detect TP25W vs TP920 format
         # TP25W has 0x00 at offset 4, and temp data starts at offset 5
         # TP920 has probe_count at offset 4, and temp data starts at offset 5
