@@ -5,11 +5,13 @@ A Linux command-line tool for reading temperatures from ThermoPro Bluetooth BBQ 
 **Monitor your BBQ from the command line!** 🍖
 
 ```bash
-$ python3 thermopro_cli.py temps --addr E3:5E:A8:FA:2F:2C
+$ python3 thermopro_cli.py temps
+Scanning for ThermoPro devices...
+Auto-selected: Thermopro (E3:5E:A8:FA:2F:2C)
 Battery: 90%
-Unit: C
-Probe 1: 24.8°C
-Probe 2: 24.6°C
+Unit: F
+Probe 1: 266.2°F
+Probe 2: not connected
 Probe 3: not connected
 Probe 4: not connected
 ```
@@ -24,6 +26,7 @@ Probe 4: not connected
 - ✅ **JSON output** - Easy integration with scripts and monitoring tools
 - ✅ **Continuous monitoring** - Stream temperatures with configurable intervals
 - ✅ **Celsius/Fahrenheit** - Display temperatures in your preferred unit
+- ✅ **Auto-discovery** - Automatically finds your device, no address needed
 - ✅ **Clean CLI** - Simple, intuitive command-line interface
 - ✅ **No Android required** - Direct Bluetooth communication from Linux
 
@@ -31,9 +34,11 @@ Probe 4: not connected
 
 **Confirmed working:**
 - ThermoPro TP25W (4-probe wireless thermometer)
+- ThermoPro TP25
 
 **Should work (untested):**
 - ThermoPro TP920
+- ThermoPro TP930
 - ThermoPro TP960
 
 The protocol was reverse-engineered from the official Android app and tested on real hardware.
@@ -81,13 +86,17 @@ Found: Thermopro (E3:5E:A8:FA:2F:2C)
 ### 2. Get Temperatures
 
 ```bash
+# Auto-discovers your device — no address needed!
+python3 thermopro_cli.py temps
+
+# Or specify the address directly
 python3 thermopro_cli.py temps --addr E3:5E:A8:FA:2F:2C
 ```
 
 ### 3. Monitor Continuously
 
 ```bash
-python3 thermopro_cli.py monitor --addr E3:5E:A8:FA:2F:2C --interval 2
+python3 thermopro_cli.py monitor --interval 2
 ```
 
 Output:
@@ -112,42 +121,51 @@ Scans for nearby Bluetooth devices and lists any ThermoPro thermometers found.
 
 #### `temps` - Get current temperatures
 ```bash
-python3 thermopro_cli.py temps --addr <BLUETOOTH_ADDR> [options]
+python3 thermopro_cli.py temps [--addr <BLUETOOTH_ADDR>] [options]
 ```
 
+If `--addr` is omitted, the tool auto-scans for ThermoPro devices.
+
 **Options:**
+- `--addr ADDR` - Bluetooth address (auto-scans if not provided)
 - `--json` - Output as JSON
-- `--unit C|F` - Set temperature unit (Celsius or Fahrenheit)
+- `--unit C|F` - Set temperature unit (default: Fahrenheit)
 
 **Examples:**
 ```bash
-# Basic usage
+# Auto-discover and read
+python3 thermopro_cli.py temps
+
+# Specify address directly
 python3 thermopro_cli.py temps --addr E3:5E:A8:FA:2F:2C
 
 # JSON output for scripting
-python3 thermopro_cli.py temps --addr E3:5E:A8:FA:2F:2C --json
+python3 thermopro_cli.py temps --json
 
-# Force Fahrenheit
-python3 thermopro_cli.py temps --addr E3:5E:A8:FA:2F:2C --unit F
+# Celsius
+python3 thermopro_cli.py temps --unit C
 ```
 
 #### `monitor` - Continuous temperature monitoring
 ```bash
-python3 thermopro_cli.py monitor --addr <BLUETOOTH_ADDR> [options]
+python3 thermopro_cli.py monitor [--addr <BLUETOOTH_ADDR>] [options]
 ```
 
+If `--addr` is omitted, the tool auto-scans for ThermoPro devices.
+
 **Options:**
+- `--addr ADDR` - Bluetooth address (auto-scans if not provided)
 - `--interval N` - Update interval in seconds (default: 1)
 - `--json` - Output each reading as JSON
-- `--unit C|F` - Temperature unit (Celsius or Fahrenheit)
+- `--unit C|F` - Temperature unit (default: Fahrenheit)
 
 **Examples:**
 ```bash
 # Monitor with 2-second updates
-python3 thermopro_cli.py monitor --addr E3:5E:A8:FA:2F:2C --interval 2
+python3 thermopro_cli.py monitor --interval 2
 
 # Monitor with JSON output for logging
-python3 thermopro_cli.py monitor --addr E3:5E:A8:FA:2F:2C --json >> cook_log.jsonl
+python3 thermopro_cli.py monitor --json >> cook_log.jsonl
 ```
 
 #### `mqtt` - Publish to MQTT for Home Assistant
@@ -155,15 +173,16 @@ python3 thermopro_cli.py monitor --addr E3:5E:A8:FA:2F:2C --json >> cook_log.jso
 python3 thermopro_cli.py mqtt --addr <BLUETOOTH_ADDR> [options]
 ```
 
-Continuously publish temperature readings to an MQTT broker with Home Assistant auto-discovery support.
+Continuously publish temperature readings to an MQTT broker with Home Assistant auto-discovery support. The `--addr` flag is **required** for this command since it runs as an unattended service where deterministic device selection is important.
 
 **Options:**
+- `--addr ADDR` - Bluetooth address (**required**)
 - `--broker HOST` - MQTT broker address (or set `MQTT_BROKER` env var)
 - `--port PORT` - MQTT broker port (default: 1883)
 - `--username USER` - MQTT username (or set `MQTT_USERNAME` env var)
 - `--password PASS` - MQTT password (or set `MQTT_PASSWORD` env var)
 - `--interval N` - Update interval in seconds (default: 5)
-- `--unit C|F` - Temperature unit (Celsius or Fahrenheit)
+- `--unit C|F` - Temperature unit (default: Fahrenheit)
 - `--device-name NAME` - Custom device name for MQTT topics (default: thermopro)
 
 **Examples:**
@@ -192,19 +211,19 @@ See [SYSTEMD_SETUP.md](SYSTEMD_SETUP.md) for running as a background service.
 
 #### `connect` - Test connection
 ```bash
-python3 thermopro_cli.py connect --addr <BLUETOOTH_ADDR>
+python3 thermopro_cli.py connect [--addr <BLUETOOTH_ADDR>]
 ```
 
-Tests the connection and displays device information and current temperatures.
+Tests the connection and displays device information and current temperatures. Auto-scans if `--addr` is omitted.
 
 ### JSON Output Format
 
 ```json
 {
   "battery": 90,
-  "unit": "C",
+  "unit": "F",
   "probe_count": 4,
-  "temperatures": [24.8, 24.6, -999.0, -999.0],
+  "temperatures": [266.2, -999.0, -999.0, -999.0],
   "last_update": "2025-12-14T10:30:00.123456",
   "connected": true
 }
@@ -354,8 +373,7 @@ python3 parse_btsnoop.py btsnoop_hci.log
 
 Contributions are welcome! Areas for improvement:
 
-- **Support for more models** (TP901, TP902, TP930, etc.)
-- **Auto-discovery** of device addresses
+- **Support for more models** (TP901, TP902, etc.)
 - **Temperature alerts** with desktop notifications
 - **Graphing/visualization** of temperature history
 - **Configuration file** for storing device addresses
