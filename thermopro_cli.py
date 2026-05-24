@@ -20,6 +20,7 @@ Environment variables for MQTT:
 import asyncio
 import argparse
 import json
+import re
 import sys
 import time
 import os
@@ -393,7 +394,7 @@ async def cmd_scan():
     thermopro_devices = []
     for device in devices:
         name = device.name or ""
-        if "thermo" in name.lower():
+        if "thermo" in name.lower() or re.match(r"^TP\d", name):
             thermopro_devices.append(device)
             print(f"Found: {device.name} ({device.address})")
 
