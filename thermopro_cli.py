@@ -46,6 +46,14 @@ NOTIFY_UUID = "1086FFF2-3343-4817-8BB2-B32206336CE8"
 WRITE_UUID = "1086FFF1-3343-4817-8BB2-B32206336CE8"
 
 
+# Sentinel values from decode_temperature() that are not real readings
+TEMP_SENTINELS = {-999.0, -100.0, 666.0}
+
+
+def is_valid_temp(t: float) -> bool:
+    return t not in TEMP_SENTINELS
+
+
 # Device state
 class ThermoproState:
     def __init__(self):
@@ -53,7 +61,7 @@ class ThermoproState:
         self.device_unit = "C"  # What the device is actually reporting in
         self.display_unit = "F"  # What the user wants to see
         self.probe_count = 4
-        self.temperatures = [-999.0] * 4  # Always stored in device's native unit
+        self.temperatures = [-999.0] * 4
         self.last_update = None
         self.connected = False
 
@@ -63,7 +71,7 @@ class ThermoproState:
             return self.temperatures[:]
         temps = []
         for t in self.temperatures:
-            if t <= -900:
+            if not is_valid_temp(t):
                 temps.append(t)
             elif self.device_unit == "C" and self.display_unit == "F":
                 temps.append(t * 9.0 / 5.0 + 32.0)
@@ -79,7 +87,7 @@ class ThermoproState:
             "battery": self.battery,
             "unit": self.display_unit,
             "probe_count": self.probe_count,
-            "temperatures": [round(t, 1) if t > -900 else t for t in temps],
+            "temperatures": [round(t, 1) if is_valid_temp(t) else t for t in temps],
             "last_update": self.last_update.isoformat() if self.last_update else None,
             "connected": self.connected,
         }
@@ -415,11 +423,10 @@ async def cmd_connect(address: str, use_polling: bool = False, debug: bool = Fal
             print(f"Probes: {client.state.probe_count}")
             temps = client.state.get_display_temperatures()
             for i, temp in enumerate(temps[: client.state.probe_count]):
-                status = "connected" if temp > -900 else "not connected"
-                if temp > -900:
-                    print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit} ({status})")
+                if is_valid_temp(temp):
+                    print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit} (connected)")
                 else:
-                    print(f"Probe {i+1}: {status}")
+                    print(f"Probe {i+1}: not connected")
             return 0
         else:
             print("Timeout waiting for temperature data", file=sys.stderr)
@@ -453,7 +460,7 @@ async def cmd_temps(
                 print(f"Unit: {client.state.display_unit}")
                 temps = client.state.get_display_temperatures()
                 for i, temp in enumerate(temps[: client.state.probe_count]):
-                    if temp > -900:
+                    if is_valid_temp(temp):
                         print(f"Probe {i+1}: {temp:.1f}°{client.state.display_unit}")
                     else:
                         print(f"Probe {i+1}: not connected")
@@ -501,7 +508,7 @@ async def cmd_monitor(
                         for i, temp in enumerate(
                             temps[: client.state.probe_count]
                         ):
-                            if temp > -900:
+                            if is_valid_temp(temp):
                                 temps_str.append(
                                     f"P{i+1}:{temp:.1f}°{client.state.display_unit}"
                                 )
@@ -585,7 +592,7 @@ class MQTTPublisher:
         self.client.loop_stop()
         self.client.disconnect()
 
-    def publish_discovery(self, probe_num: int, mac_address: str):
+    def publish_discovery(self, probe_num: int, mac_address: str, unit: str = "F"):
         """Publish Home Assistant MQTT discovery config for a probe"""
         device_id = mac_address.replace(":", "").lower()
         probe_id = f"{self.device_name}_probe{probe_num}"
@@ -603,7 +610,7 @@ class MQTTPublisher:
             "name": f"ThermoPro Probe {probe_num}",
             "unique_id": f"{device_id}_probe{probe_num}_temp",
             "state_topic": f"{self.discovery_prefix}/sensor/{probe_id}/state",
-            "unit_of_measurement": "°C",
+            "unit_of_measurement": f"°{unit}",
             "device_class": "temperature",
             "value_template": "{{ value_json.temperature }}",
             "device": device_info,
@@ -642,8 +649,7 @@ class MQTTPublisher:
         probe_id = f"{self.device_name}_probe{probe_num}"
         state_topic = f"{self.discovery_prefix}/sensor/{probe_id}/state"
 
-        if not connected or temperature <= -900:
-            # Publish unavailable state
+        if not connected:
             self.client.publish(state_topic, json.dumps({"temperature": None}))
         else:
             state = {
@@ -708,6 +714,7 @@ async def cmd_mqtt(
     last_publish_time = None
 
     thermo_client = None
+    display_unit = unit.upper() if unit else "F"
 
     try:
         print(
@@ -724,7 +731,6 @@ async def cmd_mqtt(
 
                     print(f"Connecting to thermometer {address}...", file=sys.stderr)
                     thermo_client = ThermoproClient(address, debug=debug)
-                    display_unit = unit.upper() if unit else "F"
 
                     if not await thermo_client.connect(display_unit=display_unit):
                         consecutive_failures += 1
@@ -745,7 +751,7 @@ async def cmd_mqtt(
                             file=sys.stderr,
                         )
                     for probe_num in range(1, 5):
-                        mqtt_client.publish_discovery(probe_num, address)
+                        mqtt_client.publish_discovery(probe_num, address, display_unit)
                     mqtt_client.publish_battery_discovery(address)
 
                     # Reset retry delay on successful connection
@@ -759,7 +765,7 @@ async def cmd_mqtt(
                     temps = thermo_client.state.get_display_temperatures()
                     for i, temp in enumerate(temps[:4]):
                         probe_num = i + 1
-                        connected = temp > -900
+                        connected = is_valid_temp(temp)
                         mqtt_client.publish_state(probe_num, temp, connected)
 
                         if debug:
